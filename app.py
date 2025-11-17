@@ -245,7 +245,7 @@ def delete_embeddings_for_session(session_id: str) -> Tuple[bool, str]:
         return False, str(e)
 
 st.set_page_config(
-    page_title="PDF RAG",
+    page_title="PDF to RAG",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -259,7 +259,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("PDF RAG")
+st.title("PDF to RAG")
 
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
@@ -469,10 +469,10 @@ else:
             st.error("Assistant not ready. Please wait a moment and try again.")
         else:
             st.session_state.messages.append({"role": "user", "content": user_input})
-            with st.chat_message("user",avatar="🧑‍💻"):
+            with st.chat_message("user"):
                 st.markdown(user_input)
             
-            with st.chat_message("assistant",avatar="🤖"):
+            with st.chat_message("assistant"):
                 with st.spinner("Searching your documents for an answer..."):
                     try:
                         start_time = time.time()
