@@ -1,0 +1,3 @@
+GROQ_API_KEY="the groq api key"
+HF_TOKEN="hugging face Access token"
+
