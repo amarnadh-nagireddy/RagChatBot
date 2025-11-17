@@ -22,8 +22,6 @@ from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from chromadb import PersistentClient
 
-
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -31,22 +29,19 @@ load_dotenv()
 os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY", "")
 os.environ["HF_TOKEN"] = os.getenv("HF_TOKEN", "")
 
-
-
 @st.cache_resource
 def get_embeddings():
-    """Initialize embeddings with caching for performance."""
     return HuggingFaceEmbeddings(
         model_name="all-MiniLM-L6-v2",
         model_kwargs={"trust_remote_code": True}
     )
 
 @st.cache_resource
-def get_llm():
+def get_llm(model_id="llama-3.1-8b-instant"):  
     """Initialize LLM with optimized settings."""
     return ChatGroq(
         groq_api_key=os.environ["GROQ_API_KEY"],
-        model_name="openai/gpt-oss-20b",
+        model_name=model_id, 
         temperature=0.3,
         max_tokens=1024
     )
@@ -58,14 +53,9 @@ PERSIST_DIR = "chroma_persist"
 METADATA_FILE = os.path.join(PERSIST_DIR, "document_metadata.json")
 client = PersistentClient(path=PERSIST_DIR)
 
-# Persist directory
 os.makedirs(PERSIST_DIR, exist_ok=True)
 
-
-
-
 def load_document_metadata() -> Dict:
-    """Load document metadata from file."""
     if os.path.exists(METADATA_FILE):
         try:
             with open(METADATA_FILE, 'r') as f:
@@ -76,7 +66,6 @@ def load_document_metadata() -> Dict:
     return {}
 
 def save_document_metadata(metadata: Dict):
-    """Save document metadata to file."""
     try:
         with open(METADATA_FILE, 'w') as f:
             json.dump(metadata, f, indent=2)
@@ -84,7 +73,6 @@ def save_document_metadata(metadata: Dict):
         logger.error(f"Could not save metadata: {e}")
 
 def get_collection_stats() -> Dict:
-    """Get statistics about the current collection."""
     try:
         collection = client.get_collection("rag_collection")
         count = collection.count()
@@ -93,7 +81,6 @@ def get_collection_stats() -> Dict:
         return {"document_count": 0}
 
 def load_or_create_vectorstore():
-    """Load or create the Chroma vectorstore."""
     vectorstore = Chroma(
         client=client,
         collection_name="rag_collection",
@@ -101,13 +88,7 @@ def load_or_create_vectorstore():
     )
     return vectorstore
 
-
-
-
 def create_vector_embedding(file_path: str, session_id: Optional[str] = None) -> Tuple[bool, str]:
-    """Create vector embeddings for a PDF file.
-    Returns (success: bool, filename: str)
-    """
     try:
         vectorstore = load_or_create_vectorstore()
         filename = os.path.basename(file_path)
@@ -125,7 +106,6 @@ def create_vector_embedding(file_path: str, session_id: Optional[str] = None) ->
             if session_id is not None:
                 doc.metadata["session_id"] = session_id
         
-        # Chunk settings
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
@@ -135,7 +115,6 @@ def create_vector_embedding(file_path: str, session_id: Optional[str] = None) ->
         
         vectorstore.add_documents(final_docs, batch_size=100)
         
-        # Update metadata
         metadata = load_document_metadata()
         metadata[filename] = {
             "chunks": len(final_docs),
@@ -157,11 +136,7 @@ def create_vector_embedding(file_path: str, session_id: Optional[str] = None) ->
         logger.error(f"Error processing {file_path}: {e}")
         return False, str(e)
 
-
-
-
 def get_rag_chain(vectorstore: Chroma):
-    """Create an optimized RAG chain with conversational history."""
     retriever = vectorstore.as_retriever(
         search_kwargs={"k": 5}
     )
@@ -195,13 +170,12 @@ def get_rag_chain(vectorstore: Chroma):
         get_session_history,
         input_messages_key="input",
         history_messages_key="chat_history",
+        output_messages_key="answer"
     )
 
     return conversational_rag_chain
 
-
 def call_conversational_rag(conversational_rag_chain, question: str, session_id: str):
-    """Invoke the conversational RAG chain and return the result dictionary."""
     try:
         input_payload = {"input": question}
         config_payload = {"configurable": {"session_id": session_id}}
@@ -210,22 +184,14 @@ def call_conversational_rag(conversational_rag_chain, question: str, session_id:
         logger.error(f"RAG invocation failed: {e}")
         raise
 
-
 def format_sources(context_documents, max_snippets: int = 5) -> str:
-    """
-    Format source documents with page references.
-    Returns markdown-formatted string with sources.
-    """
-    # Build a mapping of filename -> set(page_numbers)
     sources_dict: Dict[str, set] = {}
 
     for doc in context_documents[:max_snippets]:
         md = getattr(doc, "metadata", {}) or {}
 
-        # Determine the source: prefer explicit filename, otherwise try common keys
         source = md.get("source") or md.get("filename") or md.get("file") or md.get("source_name")
 
-        # Normalize source to just a filename when possible
         if source:
             try:
                 src_name = Path(str(source)).name
@@ -234,20 +200,17 @@ def format_sources(context_documents, max_snippets: int = 5) -> str:
         else:
             src_name = "Unknown"
 
-        # Try multiple possible page metadata keys and normalize to 1-based page numbers
         page_num = None
         for key in ("page", "page_number", "page_no", "pageno"):
             if key in md:
                 try:
                     page_num = int(md[key])
-                    # In some loaders 'page' is zero-indexed
                     if key == "page":
                         page_num = page_num + 1
                 except Exception:
                     page_num = None
                 break
 
-        # If no explicit page number is available, skip adding (avoid noisy references)
         if page_num is None:
             continue
 
@@ -258,7 +221,6 @@ def format_sources(context_documents, max_snippets: int = 5) -> str:
     if not sources_dict:
         return ""
 
-    # Format as simple file -> pages list, no collection names
     sources_text = "\n\n**📄 Sources:**\n"
     for source, pages in sorted(sources_dict.items()):
         pages_str = ", ".join(f"Page {p}" for p in sorted(pages))
@@ -266,18 +228,11 @@ def format_sources(context_documents, max_snippets: int = 5) -> str:
 
     return sources_text
 
-
 def delete_embeddings_for_session(session_id: str) -> Tuple[bool, str]:
-    """
-    Delete embeddings and metadata entries associated with a given session_id.
-    Returns (success, message).
-    """
     try:
         collection = client.get_collection("rag_collection")
-        # Delete vectors whose metadata.session_id matches
         collection.delete(where={"session_id": session_id})
 
-        # Remove metadata entries for files associated with this session
         metadata = load_document_metadata()
         to_delete = [name for name, info in metadata.items() if info.get("session_id") == session_id]
         for name in to_delete:
@@ -289,26 +244,22 @@ def delete_embeddings_for_session(session_id: str) -> Tuple[bool, str]:
         logger.error(f"Failed to delete embeddings for session {session_id}: {e}")
         return False, str(e)
 
-
-
-
 st.set_page_config(
-    page_title="Document Assistant",
+    page_title="PDF RAG",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
 st.markdown("""
     <style>
     .main-header { font-size: 2.5rem; color: #1f77e6; margin-bottom: 1rem; }
     .doc-badge { display: inline-block; background: #e0e7ff; color: #3730a3; 
-                 padding: 0.5rem 1rem; border-radius: 0.5rem; margin: 0.25rem; font-size: 0.9rem; }
+                  padding: 0.5rem 1rem; border-radius: 0.5rem; margin: 0.25rem; font-size: 0.9rem; }
     .source-box { background: #f0f9ff; border-left: 4px solid #3b82f6; padding: 1rem; margin: 0.5rem 0; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📄 Document Assistant — Ask your PDFs")
+st.title("PDF RAG")
 
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
@@ -332,31 +283,11 @@ if "conv_chain" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-
-
 with st.sidebar:
-    st.header("📚 Your Documents")
+    st.header("Settings")
     
-    # Show document statistics
-    stats = get_collection_stats()
-    col1 = st.columns(1)[0]
-    with col1:
-        st.metric("📊 Sections Indexed", stats["document_count"])
     
-    # Document metadata display
-    metadata = load_document_metadata()
-    if metadata:
-        st.subheader("Uploaded Documents")
-        for doc_name, info in metadata.items():
-            with st.expander(f"📄 {doc_name}", expanded=False):
-                st.write(f"**Chunks:** {info.get('chunks', 'N/A')}")
-                st.write(f"**Pages:** {info.get('pages', 'N/A')}")
-                st.write(f"**Status:** {info.get('status', 'unknown')}")
-    
-    st.divider()
-    
-    # File upload section
-    st.subheader("📥 Add PDF files")
+    st.subheader("Add PDF files")
     uploaded_files = st.file_uploader(
         "Select PDF files",
         type=["pdf"],
@@ -376,27 +307,41 @@ with st.sidebar:
             
             progress_container = st.container()
             with progress_container:
-                st.info(f"Preparing {len(uploaded_files)} file(s) for search...")
+                # create elements that we can update dynamically
+                status_text = st.empty()
                 progress_bar = st.progress(0)
+                failed_files = []
                 
                 for idx, uploaded_file in enumerate(uploaded_files):
+                    # Update the status text to show current file
+                    status_text.text(f"Processing {idx + 1}/{len(uploaded_files)}: {uploaded_file.name}")
+                    
                     tmp_path = os.path.join(tmp_dir, f"{uuid.uuid4()}_{uploaded_file.name}")
                     
                     with open(tmp_path, "wb") as f:
                         f.write(uploaded_file.getbuffer())
                     
-                    success, filename = create_vector_embedding(tmp_path, session_id=st.session_state.session_id)
+                    success, msg = create_vector_embedding(tmp_path, session_id=st.session_state.session_id)
                     
                     if success:
                         success_count += 1
-                        st.success(f"Indexed: {filename}")
                     else:
                         error_count += 1
-                        st.error(f"Failed to index: {filename}")
+                        failed_files.append(uploaded_file.name)
                     
+                    # Update progress bar
                     progress_bar.progress((idx + 1) / len(uploaded_files))
+                
+                # Clear the progress indicators when done
+                status_text.empty()
+                progress_bar.empty()
+
+                # Show one simple result message
+                if error_count == 0:
+                    st.success(f"✅ Successfully indexed {success_count} file(s).")
+                else:
+                    st.warning(f"⚠️ Indexed {success_count} files. Failed: {', '.join(failed_files)}")
             
-            # Update document index
             with st.spinner("Finalizing upload..."):
                 try:
                     st.session_state.vectorstore = load_or_create_vectorstore()
@@ -404,11 +349,43 @@ with st.sidebar:
                     st.success(f"Completed: {success_count} succeeded, {error_count} failed")
                 except Exception as e:
                     st.error(f"Failed to update document index: {e}")
+    st.divider()
+    
+    st.subheader("Model Select")
+    
+
+    model_options = {
+        "Llama 3.1 (8B) - Balanced": "llama-3.1-8b-instant",
+        "groq-compound mini - lite": "groq/compound-mini",
+        "openai gpt oss (20b) - Fast": "openai/gpt-oss-20b",
+        
+    }
+
+    # 2. Create the dropdown
+    selected_model_name = st.selectbox(
+        "🤖 Select Model",
+        options=list(model_options.keys()),
+        index=0, # Default to the first one
+        help="Select the AI model used for generating answers."
+    )
+    
+    # 3. Get the actual API ID
+    selected_model_id = model_options[selected_model_name]
+
+    # 4. Detect change and force a reload
+    if "current_model" not in st.session_state:
+        st.session_state.current_model = selected_model_id
+    
+    # If user changed the model, reset the chain so it rebuilds with the new model
+    if st.session_state.current_model != selected_model_id:
+        st.session_state.current_model = selected_model_id
+        st.session_state.conv_chain = None  # Force chain rebuild
+        st.toast(f"Switched model to {selected_model_name}!", icon="🤖")
     
     st.divider()
     
-    # Settings
-    st.subheader("⚙️ Settings")
+    st.subheader("Reset")
+    
 
     if st.button("🔄 Reset Chat History", use_container_width=True):
         st.session_state.session_id = str(uuid.uuid4())
@@ -434,38 +411,67 @@ with st.sidebar:
             st.error(f"Error clearing vectorstore: {e}")
 
 
+meta_check = load_document_metadata()
 
+if not meta_check:
+    st.markdown("""
+    <div style='text-align: center; margin-bottom: 2rem;'>
+        <h1>👋 Welcome to Document Assistant</h1>
+        <p>Chat with your PDF documents in seconds.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-# Only enable chat when at least one document is indexed
-doc_count = get_collection_stats().get("document_count", 0)
-if doc_count == 0:
-    st.info("📤 Upload PDF files first to start asking questions.")
+    # Create three columns for the tutorial
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("### 1️⃣ Upload PDFs")
+        st.markdown("Navigate to the **sidebar** on the left. Click **'Browse files'** to select your PDF documents.")
+
+    with col2:
+        st.markdown("### 2️⃣ Click Index")
+        st.markdown("Click the **'📥 Upload'** button. The system will split your documents into searchable chunks.")
+
+    with col3:
+        st.markdown("### 3️⃣ Start Chatting")
+        st.markdown("Once processed, the chat input will appear below. Ask any question about your files!")
+
+    st.divider()
+    st.info("💡 **Note:** Your documents are processed locally and stored in a persistent vector database.")
 else:
-    # Rebuild chain if needed
     if st.session_state.conv_chain is None:
         with st.spinner("Preparing assistant..."):
             try:
-                st.session_state.conv_chain = get_rag_chain(st.session_state.vectorstore)
-                st.info("Assistant ready!")
+                # We need to instantiate the LLM with the specific ID selected
+                llm = get_llm(st.session_state.get("current_model", "llama-3.1-8b-instant"))
+
+                # You need to update get_rag_chain to accept 'llm' as an argument 
+                # OR update the global 'llm' variable. 
+                # The easiest way in your current script structure is to update the global variable just before creating the chain:
+                if st.session_state.conv_chain is None:
+                    with st.spinner("Preparing assistant..."):
+                        try:
+                            llm = get_llm(st.session_state.current_model)
+                            st.session_state.conv_chain = get_rag_chain(st.session_state.vectorstore)
+                            st.info(f"Assistant ready! ({selected_model_name})")
+                        except Exception as e:
+                            st.error(f"Failed to prepare assistant: {e}")
+                            st.info("Assistant ready!")
             except Exception as e:
                 st.error(f"Failed to prepare assistant: {e}")
 
-    # Display chat history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Chat input
     if user_input := st.chat_input("Ask a question about your files..."):
         if st.session_state.conv_chain is None:
             st.error("Assistant not ready. Please wait a moment and try again.")
         else:
-            # Add user message
             st.session_state.messages.append({"role": "user", "content": user_input})
             with st.chat_message("user",avatar="🧑‍💻"):
                 st.markdown(user_input)
             
-            # Get response
             with st.chat_message("assistant",avatar="🤖"):
                 with st.spinner("Searching your documents for an answer..."):
                     try:
@@ -482,7 +488,6 @@ else:
                         
                         elapsed = time.time() - start_time
                         
-                        # Format final response
                         sources_text = format_sources(context_docs)
                         final_answer = f"{answer}{sources_text}\n\n⏱️ _Retrieved in {elapsed:.2f}s_"
                         
@@ -493,7 +498,6 @@ else:
                         st.error(f"Error generating answer: {e}")
                         final_answer = f"❌ Error: {str(e)}"
                 
-                # Add assistant message to history
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": final_answer
